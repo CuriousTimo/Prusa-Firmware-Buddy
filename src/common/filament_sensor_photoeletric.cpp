@@ -22,14 +22,14 @@ void FSensor::cycle0() {
         FSensorPins::pullDown();
         meas_cycle = 1; //next cycle shall be 1
     } else {
-        set_state(fsensor_t::NoFilament); //it is filtered, 2 requests are needed to change state
+        set_state(fsensor_t::HasFilament); //it is filtered, 2 requests are needed to change state
         meas_cycle = 0;                   //remain in cycle 0
     }
 }
 
 void FSensor::cycle1() {
     //pulldown was set in cycle 0
-    set_state(FSensorPins::Get() ? fsensor_t::HasFilament : fsensor_t::NotConnected);
+    set_state(FSensorPins::Get() ? fsensor_t::NoFilament : fsensor_t::NotConnected);
     FSensorPins::pullUp();
     meas_cycle = 0; //next cycle shall be 0
 }
