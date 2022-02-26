@@ -5,19 +5,37 @@ target_sources(
   INTERFACE wui.c
             wui_REST_api.c
             netdev.c
-            alsockets.c
+            json_encode.c
             wui_api.c
             http/fs.c
-            http/handler.c
-            http_handler_default.c
-            http_lifetime.c
-            http/httpd.c
-            http/httpd_post.c
-            http/multipart_parser.c
-            http/upload_state.cpp
+            http_lifetime.cpp
+            nhttp/multipart_parser.c
+            nhttp/upload_state.cpp
             ethernetif.c
+            espif.cpp
             sntp/sntp_client.c
             sntp/sntp.c
+            automata/core.cpp
+            nhttp/common_selectors.cpp
+            nhttp/file_info.cpp
+            nhttp/gcode_upload.cpp
+            nhttp/gcode_preview.cpp
+            nhttp/gen_once.cpp
+            nhttp/handler.cpp
+            nhttp/headers.cpp
+            nhttp/job_command.cpp
+            nhttp/job_command_marlin.cpp
+            nhttp/req_parser.cpp
+            nhttp/send_file.cpp
+            nhttp/server.cpp
+            nhttp/static_mem.cpp
+            nhttp/status_page.cpp
+            link_content/prusa_link_api.cpp
+            link_content/static_file.cpp
+            link_content/static_fs_file.cpp
+            link_content/usb_files.cpp
+            link_content/previews.cpp
+            ${CMAKE_CURRENT_BINARY_DIR}/http_req_automaton.cpp
   )
 
 set(WEB_FILE "fsdata_wui_local.c")
@@ -34,14 +52,28 @@ add_custom_command(
 
 add_custom_target(generate-web-file DEPENDS ${CMAKE_BINARY_DIR}/${WEB_FILE})
 
-add_dependencies(WUI generate-web-file)
+file(GLOB AUTOMATA_GENERATORS ${PROJECT_ROOT_DIR}/utils/gen-automata/*.py)
+
+add_custom_command(
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/http_req_automaton.cpp
+         ${CMAKE_CURRENT_BINARY_DIR}/http_req_automaton.h
+  DEPENDS ${AUTOMATA_GENERATORS}
+  COMMAND ${Python3_EXECUTABLE} ${PROJECT_ROOT_DIR}/utils/gen-automata/http.py
+  WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  COMMENT "Generating http automata"
+  )
+add_custom_target(
+  generate-http-automata DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/http_req_automaton.cpp
+                                 ${CMAKE_CURRENT_BINARY_DIR}/http_req_automaton.h
+  )
+add_dependencies(WUI generate-http-automata generate-web-file)
 
 target_include_directories(
   WUI
   INTERFACE
   INTERFACE ${CMAKE_SOURCE_DIR}/lib/WUI ${CMAKE_SOURCE_DIR}/lib/WUI/http
             ${CMAKE_SOURCE_DIR}/lib/WUI/sntp ${CMAKE_SOURCE_DIR}/lib/WUI/resources
-            ${CMAKE_BINARY_DIR}
+            ${CMAKE_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}
   )
 
 target_compile_definitions(WUI INTERFACE HTTPD_FSDATA_FILE="${WEB_FILE}")

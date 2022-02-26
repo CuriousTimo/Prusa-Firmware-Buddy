@@ -2,6 +2,7 @@
 
 #include "marlin_server.h"
 #include "marlin_server.hpp"
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include "app.h"
@@ -51,10 +52,10 @@ static_assert(MARLIN_VAR_MAX < 64, "MarlinAPI: Too many variables");
 typedef struct {
     marlin_vars_t vars;                              // cached variables
     marlin_mesh_t mesh;                              // meshbed leveling
-    uint64_t notify_events[MARLIN_MAX_CLIENTS];      // event notification mask
-    uint64_t notify_changes[MARLIN_MAX_CLIENTS];     // variable change notification mask
-    uint64_t client_events[MARLIN_MAX_CLIENTS];      // client event mask
-    uint64_t client_changes[MARLIN_MAX_CLIENTS];     // client variable change mask
+    uint64_t notify_events[MARLIN_MAX_CLIENTS];      // event notification mask - message filter
+    uint64_t notify_changes[MARLIN_MAX_CLIENTS];     // variable change notification mask - message filter
+    uint64_t client_events[MARLIN_MAX_CLIENTS];      // client event mask - unsent messages
+    uint64_t client_changes[MARLIN_MAX_CLIENTS];     // client variable change mask - unsent messages
     uint64_t mesh_point_notsent[MARLIN_MAX_CLIENTS]; // mesh point mask (points that are not sent)
     variant8_t event_messages[MARLIN_MAX_CLIENTS];   // last MARLIN_EVT_Message for clients, cannot use cvariant, desctructor would free memory
     uint64_t update_vars;                            // variable update mask
@@ -274,7 +275,8 @@ int marlin_server_cycle(void) {
             // send change notifications, clear bits for successful sent notification
             if ((msk = marlin_server.client_changes[client_id]) != 0)
                 marlin_server.client_changes[client_id] &= ~_send_notify_changes_to_client(client_id, queue, msk);
-            // send events to client only when all changes already sent, clear bits for successful sent notification
+            // send events to client only if all variables were sent already, otherwise, the message buffer is full
+            // clear bits for successful sent notification
             if ((marlin_server.client_changes[client_id]) == 0)
                 if ((msk = marlin_server.client_events[client_id]) != 0)
                     marlin_server.client_events[client_id] &= ~_send_notify_events_to_client(client_id, queue, msk);
@@ -377,7 +379,9 @@ int marlin_server_inject_gcode(const char *gcode) {
 }
 
 void marlin_server_settings_save(void) {
-    eeprom_set_var(EEVAR_ZOFFSET, variant8_flt(probe_offset.z));
+    if (!eeprom_set_z_offset(probe_offset.z)) {
+        assert(0 /* Z offset write failed */);
+    }
     eeprom_set_var(EEVAR_PID_BED_P, variant8_flt(Temperature::temp_bed.pid.Kp));
     eeprom_set_var(EEVAR_PID_BED_I, variant8_flt(Temperature::temp_bed.pid.Ki));
     eeprom_set_var(EEVAR_PID_BED_D, variant8_flt(Temperature::temp_bed.pid.Kd));
@@ -391,7 +395,7 @@ void marlin_server_settings_save(void) {
 void marlin_server_settings_load(void) {
     (void)settings.reset();
 #if HAS_BED_PROBE
-    probe_offset.z = variant8_get_flt(eeprom_get_var(EEVAR_ZOFFSET));
+    probe_offset.z = eeprom_get_z_offset();
 #endif
     Temperature::temp_bed.pid.Kp = variant8_get_flt(eeprom_get_var(EEVAR_PID_BED_P));
     Temperature::temp_bed.pid.Ki = variant8_get_flt(eeprom_get_var(EEVAR_PID_BED_I));
@@ -480,16 +484,30 @@ void marlin_server_print_resume(void) {
 }
 
 void marlin_server_print_reheat_start(void) {
-    if ((marlin_server.print_state == mpsPaused) && (marlin_server_print_reheat_ready() == 0)) {
+    if ((marlin_server.print_state == mpsPaused) && marlin_server_print_reheat_ready()) {
         thermalManager.setTargetHotend(marlin_server.resume_nozzle_temp, 0);
+        // No need to set bed temperature because we keep it on all the time.
     }
 }
 
-int marlin_server_print_reheat_ready(void) {
-    if (marlin_server.vars.target_nozzle == marlin_server.resume_nozzle_temp)
-        if (marlin_server.vars.temp_nozzle >= (marlin_server.vars.target_nozzle - 5))
-            return 1;
-    return 0;
+// Fast temperature recheck.
+// Does not check stability of the temperature.
+bool marlin_server_print_reheat_ready() {
+    // check nozzle
+    if (marlin_server.vars.target_nozzle != marlin_server.resume_nozzle_temp
+        || marlin_server.vars.temp_nozzle < (marlin_server.vars.target_nozzle - TEMP_HYSTERESIS)) {
+        return false;
+    }
+    // check bed
+    if (marlin_server.vars.temp_bed < (marlin_server.vars.target_bed - TEMP_BED_HYSTERESIS))
+        return false;
+
+    return true;
+}
+
+void marlin_server_nozzle_timeout_loop() {
+    if ((marlin_server.vars.target_nozzle > 0) && (ticks_ms() - marlin_server.paused_ticks > (1000 * PAUSE_NOZZLE_TIMEOUT)))
+        thermalManager.setTargetHotend(0, 0);
 }
 
 static void _server_print_loop(void) {
@@ -532,8 +550,7 @@ static void _server_print_loop(void) {
         }
         break;
     case mpsPaused:
-        if ((marlin_server.vars.target_nozzle > 0) && (ticks_ms() - marlin_server.paused_ticks > (1000 * PAUSE_NOZZLE_TIMEOUT)))
-            thermalManager.setTargetHotend(0, 0);
+        marlin_server_nozzle_timeout_loop();
         gcode.reset_stepper_timeout(); //prevent disable axis
         break;
     case mpsResuming_Begin:
@@ -709,10 +726,13 @@ int marlin_server_get_exclusive_mode(void) {
 }
 
 void marlin_server_set_exclusive_mode(int exclusive) {
-    if (exclusive)
+    if (exclusive) {
+        SerialUSB.setIsWriteOnly(true);
         marlin_server.flags |= MARLIN_SFLG_EXCMODE; // enter exclusive mode
-    else
+    } else {
         marlin_server.flags &= ~MARLIN_SFLG_EXCMODE; // exit exclusive mode
+        SerialUSB.setIsWriteOnly(false);
+    }
 }
 
 void marlin_server_set_temp_to_display(float value) {
@@ -798,7 +818,8 @@ static uint64_t _send_notify_events_to_client(int client_id, osMessageQId queue,
         MARLIN_EVT_t evt_id = (MARLIN_EVT_t)evt_int;
         if (msk & evt_msk) {
             switch ((MARLIN_EVT_t)evt_id) {
-            // Events without arguments
+                // Events without arguments
+                // TODO: send all these in a single message as a bitfield
             case MARLIN_EVT_Startup:
             case MARLIN_EVT_MediaInserted:
             case MARLIN_EVT_MediaError:
@@ -908,9 +929,10 @@ static uint64_t _send_notify_changes_to_client(int client_id, osMessageQId queue
     variant8_t var;
     uint64_t sent = 0;
     uint64_t msk = 1;
-    for (uint8_t var_id = 0; var_id < 64; var_id++) {
+    for (int var_id = 0; var_id <= MARLIN_VAR_MAX; var_id++) {
         if (msk & var_msk) {
-            var = marlin_vars_get_var(&(marlin_server.vars), var_id);
+            var = marlin_vars_get_var(&(marlin_server.vars), (marlin_var_id_t)var_id);
+            // if the variable is readable then send else try next time
             if (variant8_get_type(var) != VARIANT8_EMPTY) {
                 if (_send_notify_change_to_client(queue, var_id, var))
                     sent |= msk;
@@ -1145,11 +1167,9 @@ static uint64_t _server_update_vars(uint64_t update) {
     }
 
     if (update & MARLIN_VAR_MSK(MARLIN_VAR_TIMTOEND)) {
-        uint32_t progress = 0;
+        uint32_t progress = -1;
         if (oProgressData.oPercentDone.mIsActual(marlin_server.vars.print_duration))
             progress = oProgressData.oTime2End.mGetValue();
-        else
-            progress = -1;
         if (marlin_server.vars.time_to_end != progress) {
             marlin_server.vars.time_to_end = progress;
             changes |= MARLIN_VAR_MSK(MARLIN_VAR_TIMTOEND);
@@ -1288,7 +1308,8 @@ static int _process_server_request(const char *request) {
     }
     if (processed)
         if (!_send_notify_event_to_client(client_id, marlin_client_queue[client_id], MARLIN_EVT_Acknowledge, 0, 0))
-            marlin_server.notify_events[client_id] |= MARLIN_EVT_MSK(MARLIN_EVT_Acknowledge); // set bit if notification not sent
+            // FIXME: Take care of resending process elsewhere.
+            marlin_server.client_events[client_id] |= MARLIN_EVT_MSK(MARLIN_EVT_Acknowledge); // set bit if notification not sent immediately
     return processed;
 }
 
@@ -1296,7 +1317,7 @@ static int _process_server_request(const char *request) {
 static int _server_set_var(const char *const name_val_str) {
     if (name_val_str == nullptr)
         return 0;
-    int var_id;
+    marlin_var_id_t var_id;
     bool changed = false;
     char *val_str = strchr(name_val_str, ' ');
     *(val_str++) = 0;
@@ -1340,6 +1361,9 @@ static int _server_set_var(const char *const name_val_str) {
                 changed = true;
                 wait_for_user = marlin_server.vars.wait_user ? true : false;
                 break;
+            default:
+                log_error(MarlinServer, "unimplemented _server_set_var for var_id %i", (int)var_id);
+                break;
             }
             if (changed) {
                 int client_id;
@@ -1347,6 +1371,8 @@ static int _server_set_var(const char *const name_val_str) {
                 for (client_id = 0; client_id < MARLIN_MAX_CLIENTS; client_id++)
                     marlin_server.client_changes[client_id] |= (var_msk & marlin_server.notify_changes[client_id]);
             }
+        } else {
+            log_error(MarlinServer, "Unable to parse var-value pair %s", val_str);
         }
     }
     //	_dbg("_server_set_var %d %s %s", var_id, name_val_str, val_str);
@@ -1526,7 +1552,7 @@ void onConfigurationStoreRead(bool success) {
 }
 
 void onMeshUpdate(const uint8_t xpos, const uint8_t ypos, const float zval) {
-    _log_event(LOG_SEVERITY_INFO, &LOG_COMPONENT(MarlinServer), "ExtUI: onMeshUpdate x: %u, y: %u, z: %.2f", xpos, ypos, (double)zval);
+    _log_event(LOG_SEVERITY_DEBUG, &LOG_COMPONENT(MarlinServer), "ExtUI: onMeshUpdate x: %u, y: %u, z: %.2f", xpos, ypos, (double)zval);
     uint8_t index = xpos + marlin_server.mesh.xc * ypos;
     uint32_t usr32 = variant8_get_ui32(variant8_flt(zval));
     uint16_t usr16 = xpos | ((uint16_t)ypos << 8);
@@ -1536,8 +1562,13 @@ void onMeshUpdate(const uint8_t xpos, const uint8_t ypos, const float zval) {
 
 }
 
+/// Array of the last phase per fsm
+/// Used for better logging experience in fsm_change
+static int fsm_last_phase[int(ClientFSM::_count)];
+
 void fsm_create(ClientFSM type, uint8_t data) {
     _log_event(LOG_SEVERITY_INFO, &LOG_COMPONENT(MarlinServer), "Creating state machine [%d]", int(type));
+    fsm_last_phase[static_cast<int>(type)] = -1;
 
     for (size_t i = 0; i < MARLIN_MAX_CLIENTS; ++i) {
         fsm_event_queues[i].PushCreate(type, data);
@@ -1556,14 +1587,9 @@ void fsm_destroy(ClientFSM type) {
 }
 
 void _fsm_change(ClientFSM type, fsm::BaseData data) {
-    {
-        static int previous_type = -1;
-        static int previous_phase = -1;
-        if (previous_type != static_cast<int>(type) || previous_phase != static_cast<int>(data.GetPhase())) {
-            _log_event(LOG_SEVERITY_INFO, &LOG_COMPONENT(MarlinServer), "Change state of [%d] to %d", int(type), data.GetPhase());
-            previous_type = static_cast<int>(type);
-            previous_phase = static_cast<int>(data.GetPhase());
-        }
+    if (fsm_last_phase[static_cast<int>(type)] != static_cast<int>(data.GetPhase())) {
+        _log_event(LOG_SEVERITY_INFO, &LOG_COMPONENT(MarlinServer), "Change state of [%i] to %" PRIu8, static_cast<int>(type), data.GetPhase());
+        fsm_last_phase[static_cast<int>(type)] = static_cast<int>(data.GetPhase());
     }
 
     for (size_t i = 0; i < MARLIN_MAX_CLIENTS; ++i) {
@@ -1585,7 +1611,7 @@ FSM_notifier::data FSM_notifier::s_data;
 FSM_notifier *FSM_notifier::activeInstance = nullptr;
 
 FSM_notifier::FSM_notifier(ClientFSM type, uint8_t phase, variant8_t min, variant8_t max,
-    uint8_t progress_min, uint8_t progress_max, uint8_t var_id)
+    uint8_t progress_min, uint8_t progress_max, marlin_var_id_t var_id)
     : temp_data(s_data) {
     s_data.type = type;
     s_data.phase = phase;
@@ -1594,7 +1620,7 @@ FSM_notifier::FSM_notifier(ClientFSM type, uint8_t phase, variant8_t min, varian
     s_data.progress_min = progress_min;
     s_data.progress_max = progress_max;
     s_data.var_id = var_id;
-    s_data.last_progress_sent = -1;
+    s_data.last_progress_sent = std::nullopt;
     activeInstance = this;
 }
 
@@ -1624,7 +1650,8 @@ void FSM_notifier::SendNotification() {
         progress = s_data.progress_max;
 
     // after first sent, progress can only rise
-    if ((s_data.last_progress_sent == uint8_t(-1)) || (progress > s_data.last_progress_sent)) {
+    // no value: comparison returns true
+    if (progress > s_data.last_progress_sent) {
         s_data.last_progress_sent = progress;
         ProgressSerializer serializer(progress);
         _fsm_change(s_data.type, fsm::BaseData(s_data.phase, serializer.Serialize()));
@@ -1640,8 +1667,8 @@ FSM_notifier::~FSM_notifier() {
 /*****************************************************************************/
 //ClientResponseHandler
 //define static member
-//-1 (maxval) is used as no response from client
-uint32_t ClientResponseHandler::server_side_encoded_response = -1;
+//no value is used as no response from client
+std::optional<uint32_t> ClientResponseHandler::server_side_encoded_response;
 
 uint8_t get_var_sd_percent_done() {
     return marlin_server.vars.sd_percent_done;

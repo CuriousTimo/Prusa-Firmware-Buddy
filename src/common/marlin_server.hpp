@@ -1,6 +1,8 @@
 // marlin_server.hpp
 #pragma once
 
+#include <optional>
+
 #include "marlin_server.h"
 #include "client_response.hpp"
 #include "fsm_types.hpp"
@@ -27,7 +29,7 @@ void fsm_change(ClientFSM type, T phase, fsm::PhaseData data) {
 class ClientResponseHandler : public ClientResponses {
     ClientResponseHandler() = delete;
     ClientResponseHandler(ClientResponseHandler &) = delete;
-    static uint32_t server_side_encoded_response;
+    static std::optional<uint32_t> server_side_encoded_response;
 
 public:
     //call inside marlin server on received response from client
@@ -35,14 +37,13 @@ public:
         server_side_encoded_response = encoded_bt;
     }
     //return response and erase it
-    //return -1 if button does not match
     template <class T>
     static Response GetResponseFromPhase(T phase) {
-        uint32_t _phase = server_side_encoded_response >> RESPONSE_BITS;
-        if ((static_cast<uint32_t>(phase)) != _phase)
+        if (!server_side_encoded_response.has_value() || ((static_cast<uint32_t>(phase)) != server_side_encoded_response.value() >> RESPONSE_BITS))
             return Response::_none;
-        uint32_t index = server_side_encoded_response & uint32_t(MAX_RESPONSES - 1); //get response index
-        server_side_encoded_response = -1;                                           //erase response
+
+        uint32_t index = server_side_encoded_response.value() & uint32_t(MAX_RESPONSES - 1); //get response index
+        server_side_encoded_response = std::nullopt;                                         //erase response
         return GetResponse(phase, index);
     }
 };
@@ -56,13 +57,12 @@ class FSM_notifier {
         float offset = 0; //offset from lowest value
         uint8_t progress_min = 0;
         uint8_t progress_max = 100;
-        uint8_t var_id;
-        uint8_t last_progress_sent;
+        marlin_var_id_t var_id;
+        std::optional<uint8_t> last_progress_sent;
         data()
             : type(ClientFSM::_none)
             , phase(0)
-            , var_id(0)
-            , last_progress_sent(-1) {}
+            , var_id(static_cast<marlin_var_id_t>(0)) {}
     };
     //static members
     //there can be only one active instance of FSM_notifier, which use this data
@@ -75,7 +75,7 @@ class FSM_notifier {
 
 protected:
     //protected ctor so this instance cannot be created
-    FSM_notifier(ClientFSM type, uint8_t phase, variant8_t min, variant8_t max, uint8_t progress_min, uint8_t progress_max, uint8_t var_id);
+    FSM_notifier(ClientFSM type, uint8_t phase, variant8_t min, variant8_t max, uint8_t progress_min, uint8_t progress_max, marlin_var_id_t var_id);
     FSM_notifier(const FSM_notifier &) = delete;
     virtual void preSendNotification() {}
     virtual void postSendNotification() {}
@@ -86,14 +86,14 @@ public:
 };
 
 //template used by using statement
-template <int VAR_ID, class T>
+template <marlin_var_id_t VAR_ID, class T>
 class Notifier : public FSM_notifier {
 public:
     Notifier(ClientFSM type, uint8_t phase, T min, T max, uint8_t progress_min, uint8_t progress_max) {};
     //        : FSM_notifier(type, phase, min, max, progress_min, progress_max, VAR_ID) {}
 };
 
-template <int VAR_ID>
+template <marlin_var_id_t VAR_ID>
 class Notifier<VAR_ID, float> : public FSM_notifier {
 public:
     Notifier(ClientFSM type, uint8_t phase, float min, float max, uint8_t progress_min, uint8_t progress_max)

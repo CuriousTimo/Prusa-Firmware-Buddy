@@ -44,7 +44,10 @@
 #include "dump.h"
 #include "sys.h"
 #include "buffered_serial.hpp"
-#include "lwesp_ll_buddy.h"
+#ifdef BUDDY_ENABLE_WUI
+    #include "espif.h"
+#endif
+#include "tusb.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -79,10 +82,11 @@
 
 /* External variables --------------------------------------------------------*/
 extern ETH_HandleTypeDef heth;
-extern PCD_HandleTypeDef hpcd_USB_OTG_FS;
 extern HCD_HandleTypeDef hhcd_USB_OTG_HS;
 extern DMA_HandleTypeDef hdma_spi2_tx;
 extern DMA_HandleTypeDef hdma_spi2_rx;
+extern DMA_HandleTypeDef hdma_spi3_tx;
+extern DMA_HandleTypeDef hdma_spi3_rx;
 extern TIM_HandleTypeDef htim14;
 extern DMA_HandleTypeDef hdma_usart1_rx;
 extern DMA_HandleTypeDef hdma_usart2_rx;
@@ -201,11 +205,13 @@ void USART6_IRQHandler(void) {
 
     if (__HAL_UART_GET_FLAG(&huart6, UART_FLAG_IDLE)) {
         __HAL_UART_CLEAR_IDLEFLAG(&huart6);
-        esp_receive_data(&huart6);
+    #ifdef BUDDY_ENABLE_WUI
+        espif_receive_data(&huart6);
+    #endif // BUDDY_ENABLE_WUI
     }
     HAL_UART_IRQHandler(&huart6);
 }
-#else
+#else  // USE_ESP01_WITH_UART6
 void USART6_IRQHandler() {
     traceISR_ENTER();
     if (__HAL_UART_GET_FLAG(&huart6, UART_FLAG_IDLE)) {
@@ -215,7 +221,7 @@ void USART6_IRQHandler() {
     HAL_UART_IRQHandler(&huart6);
     traceISR_EXIT();
 }
-#endif
+#endif // USE_ESP01_WITH_UART6
 /**
   * @brief This function handles Window watchdog interrupt.
   */
@@ -227,6 +233,19 @@ void WWDG_IRQHandler(void) {
     /* USER CODE BEGIN WWDG_IRQn 1 */
     traceISR_EXIT();
     /* USER CODE END WWDG_IRQn 1 */
+}
+
+/**
+ * @brief This function handles DMA1 stream0 global interrupt.
+ */
+void DMA1_Stream0_IRQHandler(void) {
+    /* USER CODE BEGIN DMA1_Stream3_IRQn 0 */
+    traceISR_ENTER();
+    /* USER CODE END DMA1_Stream3_IRQn 0 */
+    HAL_DMA_IRQHandler(&hdma_spi3_rx);
+    /* USER CODE BEGIN DMA1_Stream3_IRQn 1 */
+    traceISR_EXIT();
+    /* USER CODE END DMA1_Stream3_IRQn 1 */
 }
 
 /**
@@ -269,6 +288,19 @@ void DMA1_Stream5_IRQHandler(void) {
 }
 
 /**
+ * @brief This function handles DMA1 stream7 global interrupt.
+ */
+void DMA1_Stream7_IRQHandler(void) {
+    /* USER CODE BEGIN DMA1_Stream3_IRQn 0 */
+    traceISR_ENTER();
+    /* USER CODE END DMA1_Stream7_IRQn 0 */
+    HAL_DMA_IRQHandler(&hdma_spi3_tx);
+    /* USER CODE BEGIN DMA1_Stream3_IRQn 1 */
+    traceISR_EXIT();
+    /* USER CODE END DMA1_Stream3_IRQn 1 */
+}
+
+/**
   * @brief This function handles TIM8 trigger and commutation interrupts and TIM14 global interrupt.
   */
 void TIM8_TRG_COM_TIM14_IRQHandler(void) {
@@ -287,9 +319,11 @@ void TIM8_TRG_COM_TIM14_IRQHandler(void) {
 void DMA2_Stream1_IRQHandler(void) {
     /* USER CODE BEGIN DMA2_Stream1_IRQn 0 */
     traceISR_ENTER();
+#ifdef BUDDY_ENABLE_WUI
     if (__HAL_DMA_GET_IT_SOURCE(&hdma_usart6_rx, DMA_IT_HT) != RESET || __HAL_DMA_GET_IT_SOURCE(&hdma_usart6_rx, DMA_IT_TC) != RESET) {
-        esp_receive_data(&huart6);
+        espif_receive_data(&huart6);
     }
+#endif
     /* USER CODE END DMA2_Stream1_IRQn 0 */
     HAL_DMA_IRQHandler(&hdma_usart6_rx);
     /* USER CODE BEGIN DMA2_Stream1_IRQn 1 */
@@ -344,7 +378,7 @@ void OTG_FS_IRQHandler(void) {
     /* USER CODE BEGIN OTG_FS_IRQn 0 */
     traceISR_ENTER();
     /* USER CODE END OTG_FS_IRQn 0 */
-    HAL_PCD_IRQHandler(&hpcd_USB_OTG_FS);
+    tud_int_handler(0);
     /* USER CODE BEGIN OTG_FS_IRQn 1 */
     traceISR_EXIT();
     /* USER CODE END OTG_FS_IRQn 1 */

@@ -67,6 +67,7 @@ screen_home_data_t::screen_home_data_t()
     , gcode(GCodeInfo::getInstance())
 
 {
+    EnableLongHoldScreenAction();
     window_frame_t::ClrMenuTimeoutClose();
     window_frame_t::ClrOnSerialClose(); // don't close on Serial print
     screen_filebrowser_data_t::SetRoot("/usb");
@@ -215,4 +216,26 @@ bool screen_home_data_t::moreGcodesUploaded() {
     const bool result = total != lastUploadCount;
     lastUploadCount = total;
     return result;
+}
+
+void screen_home_data_t::InitState(screen_init_variant var) {
+    if (!var.GetPosition())
+        return;
+
+    size_t pos = *(var.GetPosition());
+    if (pos >= button_count)
+        return;
+
+    w_buttons[pos].SetFocus();
+}
+
+screen_init_variant screen_home_data_t::GetCurrentState() const {
+    screen_init_variant ret;
+    for (size_t i = 0; i < button_count; ++i) {
+        if (w_buttons[i].IsFocused()) {
+            ret.SetPosition(i);
+            return ret;
+        }
+    }
+    return ret;
 }

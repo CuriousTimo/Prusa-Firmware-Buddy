@@ -44,26 +44,29 @@ const char *__var_name[] = {
     "CURR_POS_X",
     "CURR_POS_Y",
     "CURR_POS_Z",
-    "CURR_POS_E"
+    "CURR_POS_E",
+    "TRAVEL_ACCEL"
 };
 
 static_assert((sizeof(__var_name) / sizeof(char *)) == (MARLIN_VAR_MAX + 1), "Invalid number of elements in __var_name");
 
-const char *marlin_vars_get_name(uint8_t var_id) {
+const char *marlin_vars_get_name(marlin_var_id_t var_id) {
     if (var_id <= MARLIN_VAR_MAX)
         return __var_name[var_id];
     return "";
 }
 
-int marlin_vars_get_id_by_name(const char *var_name) {
+marlin_var_id_t marlin_vars_get_id_by_name(const char *var_name) {
     for (int i = 0; i <= MARLIN_VAR_MAX; i++)
         if (strcmp(var_name, __var_name[i]) == 0)
             return i;
     return -1;
 }
 
-variant8_t marlin_vars_get_var(marlin_vars_t *vars, uint8_t var_id) {
+variant8_t marlin_vars_get_var(marlin_vars_t *vars, marlin_var_id_t var_id) {
     if (!vars)
+        // FIXME: send no variant (needs new variant type) instead of empty one.
+        // Empty variant is a usable / sendable variant.
         return variant8_empty();
 
     switch (var_id) {
@@ -143,11 +146,14 @@ variant8_t marlin_vars_get_var(marlin_vars_t *vars, uint8_t var_id) {
         return variant8_flt(vars->curr_pos[2]);
     case MARLIN_VAR_CURR_POS_E:
         return variant8_flt(vars->curr_pos[3]);
+    case MARLIN_VAR_TRAVEL_ACCEL:
+        return variant8_flt(vars->travel_acceleration);
     }
-    return variant8_empty();
+
+    abort(); // unreachable
 }
 
-void marlin_vars_set_var(marlin_vars_t *vars, uint8_t var_id, variant8_t var) {
+void marlin_vars_set_var(marlin_vars_t *vars, marlin_var_id_t var_id, variant8_t var) {
     if (!vars)
         return;
 
@@ -276,10 +282,12 @@ void marlin_vars_set_var(marlin_vars_t *vars, uint8_t var_id, variant8_t var) {
     case MARLIN_VAR_FS_AUTOLOAD_ENABLED:
         vars->fs_autoload_enabled = variant8_get_ui8(var);
         break;
+    case MARLIN_VAR_TRAVEL_ACCEL:
+        vars->travel_acceleration = variant8_get_flt(var);
     }
 }
 
-int marlin_vars_value_to_str(marlin_vars_t *vars, uint8_t var_id, char *str, unsigned int size) {
+int marlin_vars_value_to_str(marlin_vars_t *vars, marlin_var_id_t var_id, char *str, unsigned int size) {
     if (!vars)
         return 0;
 
@@ -346,13 +354,15 @@ int marlin_vars_value_to_str(marlin_vars_t *vars, uint8_t var_id, char *str, uns
         return snprintf(str, size, "%u", (unsigned int)(vars->fan_check_enabled));
     case MARLIN_VAR_FS_AUTOLOAD_ENABLED:
         return snprintf(str, size, "%u", (unsigned int)(vars->fs_autoload_enabled));
+    case MARLIN_VAR_TRAVEL_ACCEL:
+        return snprintf(str, size, "%f", (double)(vars->travel_acceleration));
     default:
         return snprintf(str, size, "???");
     }
     return 0;
 }
 
-int marlin_vars_str_to_value(marlin_vars_t *vars, uint8_t var_id, const char *str) {
+int marlin_vars_str_to_value(marlin_vars_t *vars, marlin_var_id_t var_id, const char *str) {
     if (!vars)
         return 0;
 
@@ -373,6 +383,11 @@ int marlin_vars_str_to_value(marlin_vars_t *vars, uint8_t var_id, const char *st
     case MARLIN_VAR_POS_Z:
     case MARLIN_VAR_POS_E:
         return sscanf(str, "%f", &(vars->pos[var_id - MARLIN_VAR_POS_X]));
+    case MARLIN_VAR_CURR_POS_X:
+    case MARLIN_VAR_CURR_POS_Y:
+    case MARLIN_VAR_CURR_POS_Z:
+    case MARLIN_VAR_CURR_POS_E:
+        return sscanf(str, "%f", &(vars->curr_pos[var_id - MARLIN_VAR_CURR_POS_X]));
     case MARLIN_VAR_TEMP_NOZ:
         return sscanf(str, "%f", &(vars->temp_nozzle));
     case MARLIN_VAR_TEMP_BED:
@@ -419,6 +434,9 @@ int marlin_vars_str_to_value(marlin_vars_t *vars, uint8_t var_id, const char *st
         return sscanf(str, "%hhu", &(vars->fan_check_enabled));
     case MARLIN_VAR_FS_AUTOLOAD_ENABLED:
         return sscanf(str, "%hhu", &(vars->fs_autoload_enabled));
+    case MARLIN_VAR_TRAVEL_ACCEL:
+        return sscanf(str, "%f", &(vars->travel_acceleration));
     }
+
     return 0;
 }

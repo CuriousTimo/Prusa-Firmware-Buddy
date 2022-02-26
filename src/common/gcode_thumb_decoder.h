@@ -12,13 +12,11 @@
 // chci ten prostredni) Navic jsem nucen pouzivat ten hnusnej FILE interface,
 // protoze na Mini asi nic jinyho nebude
 
-#include "../Marlin/src/libs/circularqueue.h"
+#include "../../lib/Marlin/Marlin/src/libs/circularqueue.h"
 #include "base64_stream_decoder.h"
 #include <algorithm>
 #include <stdio.h>
 #include <string.h>
-
-#include "ff.h"
 
 // jeste budu asi potrebovat nacitac cele radky, pricemz musim dat pozor, aby se
 // precetlo max 80 znaku a vse ostatni az do \n se zahodilo
@@ -57,9 +55,6 @@ struct SLine {
 // to, ze dekodovaci automaty nejsou bezestavove a musi nekde svoje stavy
 // pamatovat.
 class GCodeThumbDecoder {
-    GCodeThumbDecoder() {
-    }
-
     Base64StreamDecoder base64SD;
 
     // dale budu potrebovat jednoduchy kruhovy buffer, kam se zdekoduje base64
@@ -140,17 +135,21 @@ class GCodeThumbDecoder {
 
     States state = States::Searching;
 
+    FILE *f;
+    uint16_t expected_width;
+    uint16_t expected_height;
+
 public:
-    inline static GCodeThumbDecoder &Instance() {
-        static GCodeThumbDecoder i;
-        return i;
-    }
+    inline GCodeThumbDecoder(FILE *f, uint16_t expected_width, uint16_t expected_height)
+        : f(f)
+        , expected_width(expected_width)
+        , expected_height(expected_height) {}
 
     // idealne to udelat tak, ze bych se vubec nemusel zabejvat koncema radku -
     // normalni search automat, kterej proste ve fajlu najde spravnou uvodni
     // sekvenci
 
-    int Read(FILE *f, char *pc, int n);
+    int Read(char *pc, int n);
 
     void Reset() {
         // opakovani pokusu - cteni po vice bajtech

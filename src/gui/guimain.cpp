@@ -5,6 +5,7 @@
 #include "gui.hpp"
 #include "config.h"
 #include "marlin_client.h"
+#include "display.h"
 
 #include "ScreenHandler.hpp"
 #include "ScreenFactory.hpp"
@@ -23,6 +24,9 @@
 #include "IScreenPrinting.hpp"
 #include "DialogHandler.hpp"
 #include "sound.hpp"
+#include "knob_event.hpp"
+#include "DialogMoveZ.hpp"
+#include "ScreenShot.hpp"
 #include "i18n.h"
 #include "eeprom.h"
 #include "w25x.h"
@@ -150,6 +154,9 @@ void gui_run(void) {
 
     Sound_Play(eSOUND_TYPE::Start);
 
+    gui::knob::RegisterHeldLeftAction(TakeAScreenshot);
+    gui::knob::RegisterLongPressScreenAction(DialogMoveZ::Show);
+
     ScreenFactory::Creator error_screen = nullptr;
     if (w25x_init()) {
         if (dump_in_xflash_is_valid() && !dump_in_xflash_is_displayed()) {
@@ -179,7 +186,7 @@ void gui_run(void) {
 //        HAL_IWDG_Reset ? ScreenFactory::Screen<screen_watchdog_data_t> : nullptr, // wdt
 #endif
 
-    ScreenFactory::Creator screen_initializer[] {
+    screen_node screen_initializer[] {
         error_screen,
         ScreenFactory::Screen<screen_splash_data_t>, // splash
         ScreenFactory::Screen<screen_home_data_t>    // home

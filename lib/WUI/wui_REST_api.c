@@ -10,6 +10,7 @@
 #include "wui_REST_api.h"
 #include "wui_api.h"
 #include "filament.h" //get_selected_filament_name
+#include "json_encode.h"
 #include "marlin_client.h"
 #include "lwip/init.h"
 #include "netdev.h"
@@ -18,28 +19,6 @@
 #include <stdio.h>
 
 extern uint32_t start_print;
-extern char *filename;
-
-// FIXME: We really need a proper JSON library. This is broken on many different levels.
-
-const char *json_bool(bool value) {
-    static const char json_true[] = "true";
-    static const char json_false[] = "false";
-    if (value) {
-        return json_true;
-    } else {
-        return json_false;
-    }
-}
-
-const char *basename(const char *path) {
-    const char *last_slash = rindex(path, '/');
-    if (last_slash != NULL) {
-        return last_slash + 1;
-    } else {
-        return path;
-    }
-}
 
 void get_printer(char *data, const uint32_t buf_len) {
     marlin_vars_t *vars = marlin_vars();
@@ -57,17 +36,18 @@ void get_printer(char *data, const uint32_t buf_len) {
 
     switch (vars->print_state) {
     case mpsPrinting:
-        printing = busy = true;
+        printing = true;
         ready = operational = false;
         break;
     case mpsPausing_Begin:
     case mpsPausing_WaitIdle:
     case mpsPausing_ParkHead:
-        pausing = paused = busy = true;
+        printing = pausing = paused = busy = true;
         ready = operational = false;
         break;
     case mpsPaused:
-        paused = true;
+        printing = paused = true;
+        ready = operational = false;
         break;
     case mpsResuming_Begin:
     case mpsResuming_Reheating:
@@ -92,6 +72,8 @@ void get_printer(char *data, const uint32_t buf_len) {
     default:
         break;
     }
+
+    JSONIFY_STR(filament_material);
 
     snprintf(data, buf_len,
         "{"
@@ -138,20 +120,34 @@ void get_printer(char *data, const uint32_t buf_len) {
         (double)vars->temp_nozzle,
         (int)vars->print_speed,
         (double)vars->pos[2], // XYZE, mm
-        filament_material,
+        filament_material_escaped,
         (double)vars->temp_nozzle,
         (double)vars->target_nozzle,
         (double)vars->display_nozzle,
         (double)vars->temp_bed,
         (double)vars->target_bed,
 
+        // No need to json-escape here, we have const inputs in here.
         printing ? "Printing" : "Operational",
 
-        json_bool(operational), json_bool(paused), json_bool(printing), json_bool(cancelling), json_bool(pausing),
-        json_bool(ready), json_bool(busy));
+        jsonify_bool(operational), jsonify_bool(paused), jsonify_bool(printing), jsonify_bool(cancelling), jsonify_bool(pausing),
+        jsonify_bool(ready), jsonify_bool(busy));
 }
 
 void get_version(char *data, const uint32_t buf_len) {
+    /*
+     * FIXME: The netdev_get_hostname doesn't properly synchronize. That needs
+     * a fix of its own. But to not make things even worse than they are, we
+     * make sure to copy it out to our side first and make sure it doesn't
+     * change during the JSON stringification which could lead to a different
+     * length of the output and stack smashing.
+     */
+    const char *hostname_unsynchronized = netdev_get_hostname(netdev_get_active_id());
+    const size_t hostname_in_len = strlen(hostname_unsynchronized);
+    char hostname[hostname_in_len + 1];
+    memcpy(hostname, hostname_unsynchronized, hostname_in_len);
+    hostname[hostname_in_len] = '\0';
+    JSONIFY_STR(hostname);
 
     snprintf(data, buf_len,
         "{"
@@ -160,7 +156,7 @@ void get_version(char *data, const uint32_t buf_len) {
         "\"text\":\"PrusaLink MINI\","
         "\"hostname\":\"%s\""
         "}",
-        PL_VERSION_STRING, LWIP_VERSION_STRING, netdev_get_hostname(netdev_get_active_id()));
+        PL_VERSION_STRING, LWIP_VERSION_STRING, hostname_escaped);
 }
 
 void get_job(char *data, const uint32_t buf_len) {
@@ -208,12 +204,25 @@ void get_job(char *data, const uint32_t buf_len) {
     }
 
     if (has_job) {
+        /*
+         * The file names. We probably don't work with anything that's unicode
+         * anyway. So we can use the long one for both name and display.
+         *
+         * The path is available only in the short version, unfortunately, but
+         * that's for internal uses of things anyway, so it probably doesn't
+         * matter.
+         */
+        const char *filename = vars->media_LFN;
+        JSONIFY_STR(filename);
+        const char *path = vars->media_SFN_path;
+        JSONIFY_STR(path);
+
         snprintf(data, buf_len,
             "{"
             "\"state\":\"%s\","
             "\"job\":{"
             "\"estimatedPrintTime\":%" PRIu32 ","
-            "\"file\":{\"name\":\"%s\",\"path\":\"%s\"}"
+            "\"file\":{\"name\":\"%s\",\"path\":\"%s\",\"display\":\"%s\"}"
             "}," // } job
             "\"progress\":{"
             "\"completion\":%f,"
@@ -223,7 +232,7 @@ void get_job(char *data, const uint32_t buf_len) {
             "}",
             state,
 
-            vars->print_duration + vars->time_to_end, basename(vars->media_LFN), vars->media_LFN,
+            vars->print_duration + vars->time_to_end, filename_escaped, path_escaped, filename_escaped,
             ((double)vars->sd_percent_done / 100.0), // We might want to have better resolution that whole percents.
             vars->print_duration, vars->time_to_end);
     } else {
@@ -244,30 +253,4 @@ void get_job(char *data, const uint32_t buf_len) {
             "}",
             state);
     }
-}
-
-void get_files(char *data, const uint32_t buf_len) {
-
-    /*
-     * Warning: This is a hack/stub.
-     *
-     * * This is being used both to answer /api/files _and_ as the content of the post GCODE.
-     * * We don't have a way to stream the body (eg. generate on the fly as we
-     *   are iterating through the files on the flash drive).
-     * * This is missing a lot of fields in the files.
-     *
-     * This probably depends on first getting an actual HTTP server.
-     */
-
-    snprintf(data, buf_len,
-        "{"
-        "\"files\": [{"
-        "\"local\": {"
-        "\"name\": \"%s\","
-        "\"origin\": \"local\""
-        "}"
-        "}],"
-        "\"done\": %d"
-        "}",
-        filename, (int)!start_print);
 }

@@ -5,7 +5,7 @@
 #include "../../src/gui/file_list_defs.h"
 
 // Marlin variables
-enum {
+typedef enum {
     MARLIN_VAR_MOTION = 0x00,              // R:  uint8, method stepper.axis_is_moving
     MARLIN_VAR_GQUEUE = 0x01,              // R:  uint8, method queue.length
     MARLIN_VAR_PQUEUE = 0x02,              // R:  uint8, variables planner.block_buffer_head/tail
@@ -44,11 +44,17 @@ enum {
     MARLIN_VAR_CURR_POS_Y = 0x23,          // R: ==||==
     MARLIN_VAR_CURR_POS_Z = 0x24,          // R: ==||==
     MARLIN_VAR_CURR_POS_E = 0x25,          // R: ==||==
-    MARLIN_VAR_MAX = MARLIN_VAR_CURR_POS_E
-};
+    MARLIN_VAR_TRAVEL_ACCEL = 0x26,        // R: float travel_acceleration
+    MARLIN_VAR_MAX = MARLIN_VAR_TRAVEL_ACCEL
+} marlin_var_id_t;
 
 // variable masks
-#define MARLIN_VAR_MSK(v_id) (((uint64_t)1) << (uint8_t)(v_id))
+#define MARLIN_VAR_MSK(v_id)                               (((uint64_t)1) << (uint8_t)(v_id))
+#define MARLIN_VAR_MSK2(id1, id2)                          (MARLIN_VAR_MSK(id1) | MARLIN_VAR_MSK(id2))
+#define MARLIN_VAR_MSK3(id1, id2, id3)                     (MARLIN_VAR_MSK2(id1, id2) | MARLIN_VAR_MSK(id3))
+#define MARLIN_VAR_MSK4(id1, id2, id3, id4)                (MARLIN_VAR_MSK2(id1, id2) | MARLIN_VAR_MSK2(id3, id4))
+#define MARLIN_VAR_MSK6(id1, id2, id3, id4, id5, id6)      (MARLIN_VAR_MSK3(id1, id2, id3) | MARLIN_VAR_MSK3(id4, id5, id6))
+#define MARLIN_VAR_MSK7(id1, id2, id3, id4, id5, id6, id7) (MARLIN_VAR_MSK4(id1, id2, id3, id4) | MARLIN_VAR_MSK3(id5, id6, id7))
 
 //maximum number of masks is 64
 //maximum mask index is 63
@@ -59,24 +65,24 @@ enum {
     #define MARLIN_VAR_MSK_ALL (MARLIN_VAR_MSK((MARLIN_VAR_MAX + 1)) - (uint64_t)(1)) /// cannot be enum so leave DEFINE (or static const uint64_t)
 #endif
 
-#define MARLIN_VAR_MSK_IPOS_XYZE (MARLIN_VAR_MSK(MARLIN_VAR_IPOS_X) | MARLIN_VAR_MSK(MARLIN_VAR_IPOS_Y) | MARLIN_VAR_MSK(MARLIN_VAR_IPOS_Z) | MARLIN_VAR_MSK(MARLIN_VAR_IPOS_E))
+#define MARLIN_VAR_MSK_IPOS_XYZE (MARLIN_VAR_MSK4(MARLIN_VAR_IPOS_X, MARLIN_VAR_IPOS_Y, MARLIN_VAR_IPOS_Z, MARLIN_VAR_IPOS_E))
 
-#define MARLIN_VAR_MSK_CURR_POS_XYZE (MARLIN_VAR_MSK(MARLIN_VAR_CURR_POS_X) | MARLIN_VAR_MSK(MARLIN_VAR_CURR_POS_Y) | MARLIN_VAR_MSK(MARLIN_VAR_CURR_POS_Z) | MARLIN_VAR_MSK(MARLIN_VAR_CURR_POS_E))
+#define MARLIN_VAR_MSK_CURR_POS_XYZE (MARLIN_VAR_MSK4(MARLIN_VAR_CURR_POS_X, MARLIN_VAR_CURR_POS_Y, MARLIN_VAR_CURR_POS_Z, MARLIN_VAR_CURR_POS_E))
 
-static const uint64_t MARLIN_VAR_MSK_POS_XYZE = MARLIN_VAR_MSK(MARLIN_VAR_POS_X) | MARLIN_VAR_MSK(MARLIN_VAR_POS_Y) | MARLIN_VAR_MSK(MARLIN_VAR_POS_Z) | MARLIN_VAR_MSK(MARLIN_VAR_POS_E);
+static const uint64_t MARLIN_VAR_MSK_POS_XYZE = MARLIN_VAR_MSK4(MARLIN_VAR_POS_X, MARLIN_VAR_POS_Y, MARLIN_VAR_POS_Z, MARLIN_VAR_POS_E);
 
-#define MARLIN_VAR_MSK_TEMP_CURR (MARLIN_VAR_MSK(MARLIN_VAR_TEMP_NOZ) | MARLIN_VAR_MSK(MARLIN_VAR_TEMP_BED))
+#define MARLIN_VAR_MSK_TEMP_CURR (MARLIN_VAR_MSK2(MARLIN_VAR_TEMP_NOZ, MARLIN_VAR_TEMP_BED))
 
-static const uint64_t MARLIN_VAR_MSK_TEMP_TARG = MARLIN_VAR_MSK(MARLIN_VAR_TTEM_NOZ) | MARLIN_VAR_MSK(MARLIN_VAR_TTEM_BED);
+static const uint64_t MARLIN_VAR_MSK_TEMP_TARG = MARLIN_VAR_MSK2(MARLIN_VAR_TTEM_NOZ, MARLIN_VAR_TTEM_BED);
 
 static const uint64_t MARLIN_VAR_MSK_TEMP_ALL
-    = MARLIN_VAR_MSK(MARLIN_VAR_TEMP_NOZ) | MARLIN_VAR_MSK(MARLIN_VAR_TEMP_BED) | MARLIN_VAR_MSK(MARLIN_VAR_TTEM_NOZ) | MARLIN_VAR_MSK(MARLIN_VAR_TTEM_BED) | MARLIN_VAR_MSK(MARLIN_VAR_DTEM_NOZ) | MARLIN_VAR_MSK(MARLIN_VAR_PRINT_FAN_RPM) | MARLIN_VAR_MSK(MARLIN_VAR_HEATBREAK_FAN_RPM);
+    = MARLIN_VAR_MSK7(MARLIN_VAR_TEMP_NOZ, MARLIN_VAR_TEMP_BED, MARLIN_VAR_TTEM_NOZ, MARLIN_VAR_TTEM_BED, MARLIN_VAR_DTEM_NOZ, MARLIN_VAR_PRINT_FAN_RPM, MARLIN_VAR_HEATBREAK_FAN_RPM);
 
 // variables defined in this mask are automaticaly updated every 100ms in _server_update_vars
 static const uint64_t MARLIN_VAR_MSK_DEF = MARLIN_VAR_MSK_ALL & ~MARLIN_VAR_MSK(MARLIN_VAR_PQUEUE) & ~MARLIN_VAR_MSK_IPOS_XYZE & ~MARLIN_VAR_MSK(MARLIN_VAR_WAITHEAT) & ~MARLIN_VAR_MSK(MARLIN_VAR_WAITUSER) & ~MARLIN_VAR_MSK(MARLIN_VAR_FILEPATH);
 
 static const uint64_t MARLIN_VAR_MSK_WUI
-    = MARLIN_VAR_MSK_TEMP_CURR | MARLIN_VAR_MSK(MARLIN_VAR_POS_Z) | MARLIN_VAR_MSK(MARLIN_VAR_PRNSPEED) | MARLIN_VAR_MSK(MARLIN_VAR_FLOWFACT) | MARLIN_VAR_MSK(MARLIN_VAR_DURATION) | MARLIN_VAR_MSK(MARLIN_VAR_SD_PDONE) | MARLIN_VAR_MSK(MARLIN_VAR_SD_PRINT) | MARLIN_VAR_MSK(MARLIN_VAR_FILENAME);
+    = MARLIN_VAR_MSK_TEMP_CURR | MARLIN_VAR_MSK7(MARLIN_VAR_POS_Z, MARLIN_VAR_PRNSPEED, MARLIN_VAR_FLOWFACT, MARLIN_VAR_DURATION, MARLIN_VAR_SD_PDONE, MARLIN_VAR_SD_PRINT, MARLIN_VAR_FILENAME);
 
 // usr8 in variant8_t message contains id (bit0..6) and variable/event flag (bit7)
 static const uint8_t MARLIN_USR8_VAR_FLG = 0x80; // usr8 - variable flag (bit7 set)
@@ -130,6 +136,7 @@ typedef struct _marlin_vars_t {
     float target_bed;                 // bed target temperature [C]
     float z_offset;                   // probe z-offset [mm]
     float display_nozzle;             // nozzle temperature to display [C]
+    float travel_acceleration;        // travel acceleration from planner
     uint32_t print_duration;          // print_job_timer.duration() [ms]
     uint32_t time_to_end;             // oProgressData.oTime2End.mGetValue() [s]
     char *media_LFN;                  // Long-File-Name of the currently selected file - a pointer to a global static buffer
@@ -165,22 +172,23 @@ inline int is_abort_state(marlin_print_state_t st) {
 }
 
 // returns variable name
-extern const char *marlin_vars_get_name(uint8_t var_id);
+extern const char *marlin_vars_get_name(marlin_var_id_t var_id);
 
 // returns variable id by name or -1 if not match
-extern int marlin_vars_get_id_by_name(const char *var_name);
+extern marlin_var_id_t marlin_vars_get_id_by_name(const char *var_name);
 
 // get variable value as variant8 directly from vars structure
-extern variant8_t marlin_vars_get_var(marlin_vars_t *vars, uint8_t var_id);
+// \returns empty variant if the variable is not readable
+extern variant8_t marlin_vars_get_var(marlin_vars_t *vars, marlin_var_id_t var_id);
 
 // set variable value as variant8 directly in vars structure
-extern void marlin_vars_set_var(marlin_vars_t *vars, uint8_t var_id, variant8_t var);
+extern void marlin_vars_set_var(marlin_vars_t *vars, marlin_var_id_t var_id, variant8_t var);
 
 // format variable to string
-extern int marlin_vars_value_to_str(marlin_vars_t *vars, uint8_t var_id, char *str, unsigned int size);
+extern int marlin_vars_value_to_str(marlin_vars_t *vars, marlin_var_id_t var_id, char *str, unsigned int size);
 
 // parse variable from string, returns sscanf result (1 = ok)
-extern int marlin_vars_str_to_value(marlin_vars_t *vars, uint8_t var_id, const char *str);
+extern int marlin_vars_str_to_value(marlin_vars_t *vars, marlin_var_id_t var_id, const char *str);
 
 #ifdef __cplusplus
 }
