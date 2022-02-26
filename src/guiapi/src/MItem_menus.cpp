@@ -186,7 +186,6 @@ MI_CURRENT_PROFILE::MI_CURRENT_PROFILE()
 void MI_CURRENT_PROFILE::click(IWindowMenu & /*window_menu*/) {
     sheet_next_calibrated();
     UpdateLabel();
-    marlin_set_z_offset(variant8_get_flt(eeprom_get_var(EEVAR_ZOFFSET)));
 }
 
 void MI_CURRENT_PROFILE::UpdateLabel() {
@@ -340,4 +339,17 @@ MI_EEPROM_DIAGNOSTICS::MI_EEPROM_DIAGNOSTICS()
 
 void MI_EEPROM_DIAGNOSTICS::click(IWindowMenu & /*window_menu*/) {
     Screens::Access()->Open(GetScreenMenuEepromDiagnostics);
+}
+
+/**********************************************************************************************/
+// MI_USB_MSC_ENABLE
+MI_USB_MSC_ENABLE::MI_USB_MSC_ENABLE()
+    : WI_SWITCH_OFF_ON_t(variant8_get_ui8(eeprom_get_var(EEVAR_USB_MSC_ENABLED)), _(label), 0, is_enabled_t::yes, is_hidden_t::dev) {}
+
+void MI_USB_MSC_ENABLE::OnChange(size_t old_index) {
+    if (!old_index) {
+        eeprom_set_var(EEVAR_USB_MSC_ENABLED, variant8_ui8(1));
+    } else {
+        eeprom_set_var(EEVAR_USB_MSC_ENABLED, variant8_ui8(0));
+    }
 }

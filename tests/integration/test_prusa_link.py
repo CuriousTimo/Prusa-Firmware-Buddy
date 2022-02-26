@@ -37,14 +37,23 @@ async def test_web_interface_is_accessible(wui_client: aiohttp.ClientSession):
 
 
 async def test_not_found(wui_client: aiohttp.ClientSession):
-    for non_existent in ['/nonsense', '/api/not']:
+    for non_existent in ['/nonsense', '/whatever/not']:
         response = await wui_client.get(non_existent)
         assert response.status == 404
+
+    # The whole /api is behind an authentication and _doesn't_ show even what
+    # exists and what doesn't.
+    response = await wui_client.get('/api/not')
+    assert response.status == 401
+
+    # But when authenticated, it prefers the 404 error for non-existing bits.
+    response = await wui_client.get('/api/not', headers=valid_headers())
+    assert response.status == 404
 
 
 async def test_auth(wui_client: aiohttp.ClientSession):
     # Not getting in when no X-Api-Kep is present.
-    all_endpoints = ['version', 'printer', 'job', 'files']
+    all_endpoints = ['version', 'printer', 'job']
     for endpoint in all_endpoints:
         response = await wui_client.get('/api/' + endpoint)
         assert response.status == 401
@@ -93,6 +102,24 @@ async def test_idle_job(wui_client: aiohttp.ClientSession):
     assert job["state"] == "Operational"
     assert job["job"] is None
     assert job["progress"] is None
+
+
+@pytest.fixture
+async def printer_with_files(printer_factory, printer_flash_dir, data_dir):
+    gcode_name = 'box.gcode'
+    gcode = (data_dir / gcode_name).read_bytes()
+    (printer_flash_dir / gcode_name).write(gcode)
+
+    async with printer_factory() as printer:
+        printer: Printer
+        # Wait for boot
+        await screen.wait_for_text(printer, 'HOME')
+        # Wait for mounting of the USB
+        await screen.wait_for_text(printer, 'Print')
+
+        client = aiohttp.ClientSession(base_url=wui_base_url(printer))
+
+        yield client
 
 
 @pytest.fixture
@@ -164,8 +191,9 @@ async def test_printing_job(running_printer_client):
     assert job["state"] == "Printing"
     # Hopefully the test won't take that long
     assert job["progress"]["printTime"] < 300
-    # FIXME: Fails. #BFW-2332
-    # assert job["job"]["file"]["name"] == gcode_name
+    assert job["job"]["file"]["name"] == "box.gcode"
+    assert job["job"]["file"]["display"] == "box.gcode"
+    assert job["job"]["file"]["path"] == "/usb/BOX~1.GCO"
     # It's something around 25 minutes...
     # FIXME: The following sometimes fail too. It seems marlin_vars are not
     # always properly updated?
@@ -173,6 +201,97 @@ async def test_printing_job(running_printer_client):
     assert job["job"]["estimatedPrintTime"] > 1000
     assert job["job"]["estimatedPrintTime"] == job["progress"][
         "printTime"] + job["progress"]["printTimeLeft"]
+
+
+async def test_download_gcode(printer_with_files, data_dir):
+    """
+    Test downloading the gcode from the printer.
+
+    Test both human readable and "short" file names (the latter are used within
+    the job API so they are the ones the client may discover on its own).
+    """
+    gcode = (data_dir / 'box.gcode').read_bytes()
+    for fname in ['BOX~1.GCO', 'box.gcode']:
+        download_r = await printer_with_files.get('/usb/' + fname,
+                                                  headers=valid_headers())
+        assert download_r.status == 200
+        download = await download_r.read()
+        assert download == gcode
+
+
+async def test_thumbnails(printer_with_files):
+    metadata_r = await printer_with_files.get('/api/files/usb/BOX~1.GCO',
+                                              headers=valid_headers())
+    assert metadata_r.status == 200
+    metadata = await metadata_r.json()
+    refs = metadata["refs"]
+    for thumb in (refs["thumbnailSmall"], refs["thumbnailBig"]):
+        thumb_r = await printer_with_files.get(thumb, headers=valid_headers())
+        assert thumb_r.status == 200
+        data = await thumb_r.read()
+        # Check PNG "file magic"
+        assert data[1:4] == b"PNG"
+
+
+async def test_delete_project_printing(running_printer_client):
+    fname = '/api/files/usb/BOX~1.GCO'
+    heads = valid_headers()
+    # We are printing the file right now
+    printing_attempt = await running_printer_client.delete(fname,
+                                                           headers=heads)
+    assert printing_attempt.status == 409
+
+    stop = await running_printer_client.post('/api/job',
+                                             headers=heads,
+                                             data='{"command":"cancel"}')
+    assert stop.status == 204
+
+
+async def test_delete_project(printer_with_files):
+    fname = '/api/files/usb/BOX~1.GCO'
+    heads = valid_headers()
+    idle_attempt = await printer_with_files.delete(fname, headers=heads)
+    assert idle_attempt.status == 204
+
+    # The file actually disappeared
+    listing_r = await printer_with_files.get('/api/files', headers=heads)
+    assert listing_r.status == 200
+    listing = await listing_r.json()
+    assert listing["files"] == []
+
+
+async def test_list_files(printer_with_files):
+    listing_r = await printer_with_files.get('/api/files',
+                                             headers=valid_headers())
+    assert listing_r.status == 200
+    listing = await listing_r.json()
+    file = listing["files"][0]
+    assert file["name"] == "BOX~1.GCO"
+    assert file["display"] == "box.gcode"
+    refs = file["refs"]
+    assert refs["thumbnailSmall"] == "/thumb/s/usb/BOX~1.GCO"
+    download = await printer_with_files.get(refs["download"],
+                                            headers=valid_headers())
+    assert download.status == 200
+
+
+async def test_caching(printer_with_files):
+    for path in ['/thumb/s/usb/BOX~1.GCO', '/usb/BOX~1.GCO']:
+        h = valid_headers()
+        get1 = await printer_with_files.get(path, headers=h)
+        assert get1.status == 200
+        print(dict(get1.headers))
+        etag = get1.headers['ETag']
+
+        # Match
+        h['If-None-Match'] = etag
+        get2 = await printer_with_files.get(path, headers=h)
+        assert get2.status == 304  # Not Modified
+
+        # Cache miss
+        h['If-None-Match'] = "hello-123"
+        get3 = await printer_with_files.get(path, headers=h)
+        assert get3.status == 200
 
 
 # See below, needs investigation

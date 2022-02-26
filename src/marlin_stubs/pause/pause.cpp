@@ -257,7 +257,7 @@ void Pause::plan_e_move_notify_progress(const float &length, const feedRate_t &f
     }
 }
 
-bool Pause::loadLoop(is_standalone_t standalone) {
+bool Pause::loadLoop(load_mode_t mode) {
     bool ret = true;
     const float purge_ln = std::max(purge_length, minimal_purge);
 
@@ -355,13 +355,13 @@ bool Pause::loadLoop(is_standalone_t standalone) {
         set(LoadPhases_t::_finish);
     }
 
-    idle(true); // idle loop to prevet wdt and manage heaters etc, true == do not shutdown steppers
+    idle(true, true); // idle loop to prevet wdt and manage heaters etc, true == do not shutdown steppers
     return ret;
 }
 
 bool Pause::FilamentLoad() {
     FSM_HolderLoadUnload H(*this, fast_load_length ? LoadUnloadMode::Load : LoadUnloadMode::Purge);
-    return filamentLoad(is_standalone_t::yes);
+    return filamentLoad(load_mode_t::standalone);
 }
 
 /**
@@ -376,7 +376,7 @@ bool Pause::FilamentLoad() {
  *
  * Returns 'true' if load was completed, 'false' for abort
  */
-bool Pause::filamentLoad(is_standalone_t standalone) {
+bool Pause::filamentLoad(load_mode_t mode) {
 
     // actual temperature does not matter, only target
     if (!is_target_temperature_safe())
@@ -392,7 +392,7 @@ bool Pause::filamentLoad(is_standalone_t standalone) {
 
     bool ret = true;
     do {
-        ret = loadLoop(standalone);
+        ret = loadLoop(mode);
     } while (getLoadPhase() != LoadPhases_t::_finish);
 
 #if ENABLED(PID_EXTRUSION_SCALING)
@@ -402,7 +402,7 @@ bool Pause::filamentLoad(is_standalone_t standalone) {
     return ret;
 }
 
-void Pause::unloadLoop(is_standalone_t standalone) {
+void Pause::unloadLoop(unload_mode_t mode) {
     static const RamUnloadSeqItem ramUnloadSeq[] = FILAMENT_UNLOAD_RAMMING_SEQUENCE;
     decltype(RamUnloadSeqItem::e) ramUnloadLength = 0; //Sum of ramming distances starting from first retraction
 
@@ -442,11 +442,11 @@ void Pause::unloadLoop(is_standalone_t standalone) {
 
         Filaments::Set(filament_t::NONE);
         setPhase(PhasesLoadUnload::IsFilamentUnloaded, 100);
-        set(standalone == is_standalone_t::yes ? UnloadPhases_t::_finish : UnloadPhases_t::unloaded__ask);
+        set(mode == unload_mode_t::standalone ? UnloadPhases_t::_finish : UnloadPhases_t::unloaded__ask);
     } break;
     case UnloadPhases_t::unloaded__ask: {
         if (response == Response::Yes) {
-            set(UnloadPhases_t::filament_not_in_fs);
+            set(mode == unload_mode_t::change_filament ? UnloadPhases_t::filament_not_in_fs : UnloadPhases_t::_finish);
         }
         if (response == Response::No) {
             setPhase(PhasesLoadUnload::ManualUnload, 100);
@@ -464,19 +464,24 @@ void Pause::unloadLoop(is_standalone_t standalone) {
     case UnloadPhases_t::manual_unload: {
         if (response == Response::Continue) {
             enable_e_steppers();
-            set(UnloadPhases_t::filament_not_in_fs);
+            set(mode == unload_mode_t::change_filament ? UnloadPhases_t::filament_not_in_fs : UnloadPhases_t::_finish);
         }
     } break;
     default:
         set(UnloadPhases_t::_finish);
     }
 
-    idle(true);
+    idle(true, true);
 }
 
 bool Pause::FilamentUnload() {
     FSM_HolderLoadUnload H(*this, LoadUnloadMode::Unload);
-    return filamentUnload(is_standalone_t::yes);
+    return filamentUnload(unload_mode_t::standalone);
+}
+
+bool Pause::FilamentUnload_AskUnloaded() {
+    FSM_HolderLoadUnload H(*this, LoadUnloadMode::Unload);
+    return filamentUnload(unload_mode_t::ask_unloaded);
 }
 
 /**
@@ -489,7 +494,7 @@ bool Pause::FilamentUnload() {
  *
  * Returns 'true' if unload was completed, 'false' for abort
  */
-bool Pause::filamentUnload(is_standalone_t standalone) {
+bool Pause::filamentUnload(unload_mode_t mode) {
     if (!ensureSafeTemperatureNotifyProgress(0, 50)) {
         return false;
     }
@@ -502,7 +507,7 @@ bool Pause::filamentUnload(is_standalone_t standalone) {
     set(UnloadPhases_t::_init);
 
     do {
-        unloadLoop(standalone);
+        unloadLoop(mode);
     } while (getUnloadPhase() != UnloadPhases_t::_finish);
 
 #if ENABLED(PID_EXTRUSION_SCALING)
@@ -555,6 +560,16 @@ void Pause::park_nozzle_and_notify() {
         do_blocking_move_to_z(target_Z, NOZZLE_PARK_Z_FEEDRATE);
     }
     // move to (x_pos, y_pos)
+
+    //home the X or Y axis if it is not homed and we want to move it
+    //homing is after Z move to be clear of all obstacles
+    //Should not affect other operations than Load/Unload/Change filament run from home screen without homing. We are homed during print
+    if ((axis_homed & _BV(X_AXIS)) == 0 && current_position.x - park_pos.x != 0) {
+        homeaxis(X_AXIS);
+    }
+    if ((axis_homed & _BV(Y_AXIS)) == 0 && current_position.y - park_pos.y != 0) {
+        homeaxis(Y_AXIS);
+    }
     if (x_greater_than_y) {
         Notifier_POS_X N(ClientFSM::Load_unload, getPhaseIndex(), begin_pos, end_pos, parkMoveZPercent(Z_len, XY_len), 100); //from Z% to 100%
         do_blocking_move_to_xy(park_pos, NOZZLE_PARK_XY_FEEDRATE);
@@ -567,6 +582,8 @@ void Pause::park_nozzle_and_notify() {
 }
 
 void Pause::unpark_nozzle_and_notify() {
+    if (resume_pos.x == NAN || resume_pos.y == NAN || resume_pos.z == NAN)
+        return;
 
     setPhase(PhasesLoadUnload::Unparking);
     // Move XY to starting position, then Z
@@ -577,6 +594,14 @@ void Pause::unpark_nozzle_and_notify() {
     const float Z_len = current_position.z - resume_pos.z; // sign does not matter, does not check Z max val (unlike park_nozzle_and_notify)
     const float XY_len = begin_pos - end_pos;              // sign does not matter
 
+    //home the axis if it is not homed
+    // we can move only one axis during parking and not home the other one and then unpark and move the not homed one, so we need to home it
+    if ((axis_homed & _BV(X_AXIS)) == 0 && current_position.x - park_pos.x != 0) {
+        homeaxis(X_AXIS);
+    }
+    if ((axis_homed & _BV(Y_AXIS)) == 0 && current_position.y - park_pos.y != 0) {
+        homeaxis(Y_AXIS);
+    }
     if (x_greater_than_y) {
         Notifier_POS_X N(ClientFSM::Load_unload, getPhaseIndex(), begin_pos, end_pos, 0, parkMoveXYPercent(Z_len, XY_len));
         do_blocking_move_to_xy(resume_pos, NOZZLE_UNPARK_XY_FEEDRATE);
@@ -638,9 +663,9 @@ void Pause::FilamentChange() {
         FSM_HolderLoadUnload H(*this, LoadUnloadMode::Change);
 
         if (unload_length) // Unload the filament
-            filamentUnload(is_standalone_t::no);
+            filamentUnload(unload_mode_t::change_filament);
         // Feed a little bit of filament to stabilize pressure in nozzle
-        if (filamentLoad(is_standalone_t::no)) {
+        if (filamentLoad(load_mode_t::change_filament)) {
             plan_e_move(5, 10);
             planner.synchronize();
             delay(500);
@@ -672,8 +697,6 @@ void Pause::FilamentChange() {
     if (print_job_timer.isPaused())
         print_job_timer.start();
 
-    FS_instance().ClrM600Sent(); //reset filament sensor M600 sent flag
-
 #if HAS_DISPLAY
     ui.reset_status();
 #endif
@@ -703,7 +726,7 @@ Pause::FSM_HolderLoadUnload::~FSM_HolderLoadUnload() {
 
     const float min_layer_h = 0.05f;
     //do not unpark and wait for temp if not homed or z park len is 0
-    if (!axes_need_homing() && std::abs(current_position.z - pause.resume_pos.z) >= min_layer_h) {
+    if (!axes_need_homing() && pause.resume_pos.z != NAN && std::abs(current_position.z - pause.resume_pos.z) >= min_layer_h) {
         pause.ensureSafeTemperatureNotifyProgress(0, 100);
         pause.unpark_nozzle_and_notify();
     }

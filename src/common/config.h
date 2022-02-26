@@ -13,11 +13,15 @@
 //--------------------------------------
 //marlin api config
 enum {
-    MARLIN_MAX_CLIENTS = 4,    // maximum number of clients registered in same time
+    MARLIN_MAX_CLIENTS = 3,    // maximum number of clients registered in same time
     MARLIN_MAX_REQUEST = 100,  // maximum request length in chars
     MARLIN_SERVER_QUEUE = 128, // size of marlin server input character queue (number of characters)
     MARLIN_CLIENT_QUEUE = 16,  // size of marlin client input message queue (number of messages)
 };
+
+#if defined(_DEBUG)
+    #define BUDDY_ENABLE_DFU_ENTRY
+#endif
 
 //display PSOD instead of BSOD
 //#define PSOD_BSOD

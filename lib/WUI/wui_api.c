@@ -17,6 +17,7 @@
 #include "stm32f4xx_hal.h"
 #include "print_utils.hpp"
 #include "marlin_client.h"
+#include "../../src/common/gcode_filename.h"
 
 #include <assert.h>
 #include <time.h>
@@ -32,12 +33,12 @@ extern RTC_HandleTypeDef hrtc;
 // FIXME: These need to go and get wrapped into something
 // For parallel uploads
 uint32_t start_print = 0;
-char filename[FILE_NAME_BUFFER_LEN];
 static FILE *upload_file = NULL;
 static char tmp_filename[FILE_NAME_BUFFER_LEN];
 
 static bool sntp_time_init = false;
 static char wui_media_LFN[FILE_NAME_BUFFER_LEN]; // static buffer for gcode file name
+static char wui_media_SFN_path[FILE_PATH_BUFFER_LEN];
 static atomic_int_least32_t uploaded_gcodes;
 
 void wui_marlin_client_init(void) {
@@ -46,7 +47,12 @@ void wui_marlin_client_init(void) {
     marlin_client_set_event_notify(MARLIN_EVT_MSK_DEF - MARLIN_EVT_MSK_FSM, NULL);
     marlin_client_set_change_notify(MARLIN_VAR_MSK_DEF | MARLIN_VAR_MSK_WUI, NULL);
     if (vars) {
+        /*
+         * Note: We currently have only a single marlin client for
+         * WUI/networking. So we can use a single buffer there.
+         */
         vars->media_LFN = wui_media_LFN;
+        vars->media_SFN_path = wui_media_SFN_path;
     }
 }
 
@@ -382,7 +388,7 @@ uint16_t wui_upload_begin(const char *fname) {
     }
 }
 
-uint16_t wui_upload_data(const char *data, uint32_t length) {
+uint16_t wui_upload_data(const char *data, size_t length) {
     assert(upload_file);
     const size_t written = fwrite(data, sizeof(char), length, upload_file);
     if (written < length) {
@@ -425,11 +431,12 @@ uint16_t wui_upload_finish(const char *old_filename, const char *new_filename, b
         goto clean_temp_file;
     }
 
-    if (!strstr(new_filename, "gcode")) {
+    if (!filename_is_gcode(new_filename)) {
         error_code = 415;
         goto clean_temp_file;
     }
 
+    char filename[FILE_NAME_BUFFER_LEN];
     if ((fname_length + USB_MOUNT_POINT_LENGTH) >= sizeof(filename)) {
         // The Request header fields too large is a bit of a stretch...
         error_code = 431;
@@ -441,8 +448,16 @@ uint16_t wui_upload_finish(const char *old_filename, const char *new_filename, b
 
     result = rename(tmp_filename, filename);
     if (result != 0) {
-        // Likely a bad file name. Unprocessable Entity is somewhat close...
-        error_code = 422;
+        // Most likely the file name already exists and rename refuses to overwrite (409 conflict).
+        // It could _also_ be weird file name/forbidden chars that contain (422 Unprocessable Entity).
+        // Try to guess which one.
+        FILE *attempt = fopen(filename, "r");
+        if (attempt) {
+            fclose(attempt);
+            error_code = 409;
+        } else {
+            error_code = 422;
+        }
         goto clean_temp_file;
     }
 

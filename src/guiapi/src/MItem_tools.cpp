@@ -24,6 +24,7 @@
 #include "menu_spin_config.hpp"
 #include "DialogSelftestResult.hpp"
 #include <time.h>
+#include "sys.h"
 
 /*****************************************************************************/
 //MI_WIZARD
@@ -191,6 +192,18 @@ void MI_FACTORY_DEFAULTS::click(IWindowMenu & /*window_menu*/) {
 }
 
 /*****************************************************************************/
+// MI_ENTER_DFU
+#ifdef BUDDY_ENABLE_DFU_ENTRY
+MI_ENTER_DFU::MI_ENTER_DFU()
+    : WI_LABEL_t(_(label), 0, is_enabled_t::yes, is_hidden_t::dev) {
+}
+
+void MI_ENTER_DFU::click(IWindowMenu &) {
+    sys_dfu_request_and_reset();
+}
+#endif
+
+/*****************************************************************************/
 //MI_SAVE_DUMP
 MI_SAVE_DUMP::MI_SAVE_DUMP()
     : WI_LABEL_t(_(label), 0, is_enabled_t::yes, is_hidden_t::no) {
@@ -355,7 +368,7 @@ void MI_TIMEOUT::OnChange(size_t old_index) {
 //MI_SOUND_MODE
 size_t MI_SOUND_MODE::init_index() const {
     eSOUND_MODE sound_mode = Sound_GetMode();
-    return (size_t)(sound_mode > eSOUND_MODE::ASSIST ? eSOUND_MODE::DEFAULT : sound_mode);
+    return (size_t)(sound_mode > eSOUND_MODE::ASSIST ? eSOUND_MODE::DEFAULT_SOUND : sound_mode);
 }
 MI_SOUND_MODE::MI_SOUND_MODE()
     : WI_SWITCH_t<MI_SOUND_MODE_COUNT>(init_index(), _(label), 0, is_enabled_t::yes, is_hidden_t::no,

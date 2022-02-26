@@ -40,6 +40,7 @@
 #include "marlin_server.hpp"
 #include "pause_stubbed.hpp"
 #include <cmath>
+#include "filament_sensor.hpp"
 
 /**
  * M600: Pause for filament change
@@ -83,6 +84,7 @@ void GcodeSuite::M600() {
 #endif
 
     park_point.z += current_position.z;
+    static const xyze_float_t no_return = { NAN, NAN, NAN, current_position.e };
     Pause &pause = Pause::Instance();
 
     //NAN == default
@@ -91,7 +93,7 @@ void GcodeSuite::M600() {
     pause.SetFastLoadLength(parser.seen('L') ? parser.value_axis_units(E_AXIS) : NAN);
     pause.SetPurgeLength(NAN);
     pause.SetParkPoint(park_point);
-    pause.SetResumePoint(current_position);
+    pause.SetResumePoint(parser.seen('N') ? no_return : current_position);
     pause.SetRetractLength(std::abs(parser.seen('E') ? parser.value_axis_units(E_AXIS) : NAN)); // Initial retract before move to filament change position
 
     float disp_temp = marlin_server_get_temp_to_display();
@@ -102,6 +104,7 @@ void GcodeSuite::M600() {
     }
 
     pause.FilamentChange();
+    FS_instance().ClrM600Sent(); //reset filament sensor M600 sent flag
 
     if (disp_temp > targ_temp) {
         thermalManager.setTargetHotend(targ_temp, target_extruder);

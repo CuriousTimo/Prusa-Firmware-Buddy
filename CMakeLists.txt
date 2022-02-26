@@ -285,9 +285,6 @@ target_include_directories(STM32F4_HAL_Config INTERFACE include/stm32f4_hal)
 # STM32::USBHost
 add_library(STM32_USBHost_Config ALIAS BuddyHeaders)
 
-# STM32::USBDevice
-add_library(STM32_USBDevice_Config ALIAS BuddyHeaders)
-
 # STM32::Utilities::CPU
 add_library(STM32_Utilities_CPU_Config ALIAS BuddyHeaders)
 
@@ -330,6 +327,13 @@ target_include_directories(
                           src/marlin_stubs/include
   )
 target_link_libraries(Marlin_Config INTERFACE BuddyHeaders FreeRTOS::FreeRTOS)
+
+#
+# Configure tinyusb
+#
+add_library(tinyusb_dependencies INTERFACE)
+target_include_directories(tinyusb_dependencies INTERFACE include/tinyusb)
+target_link_libraries(tinyusb_dependencies INTERFACE FreeRTOS::FreeRTOS)
 
 #
 # Global Compiler & Linker Configuration
@@ -523,12 +527,10 @@ target_link_libraries(
           Arduino::LiquidCrystal
           LwIP
           FatFs
-          lwesp
           flasher
           littlefs
           lpng
           STM32::USBHost
-          STM32::USBDevice
           CPU
           inih::inih
           $<$<BOOL:${WUI}>:WUI>
@@ -538,20 +540,21 @@ target_link_libraries(
           printf::printf
           sysbase
           Segger
+          tinyusb::tinyusb
   )
 
 target_sources(
   firmware
   PRIVATE $<$<IN_LIST:${BOOTLOADER},YES;EMPTY>:src/startup/startup_stm32f407xx_boot.s>
           $<$<STREQUAL:${BOOTLOADER},NO>:src/startup/startup_stm32f407xx.s>
-          src/usbd_cdc_if.c
           src/usb_device.c
+          src/usb_device_cdc.cpp
+          src/usb_device_msc.c
           src/freertos.c
           src/freertos_openocd.c
           src/lwip.c
           src/usbh_diskio.c
           src/main.cpp
-          src/usbd_desc.c
           $<$<IN_LIST:${BOOTLOADER},YES;EMPTY>:src/system_stm32f4xx_boot.c>
           $<$<STREQUAL:${BOOTLOADER},NO>:src/system_stm32f4xx.c>
           src/stm32f4xx_hal_msp.c
@@ -565,13 +568,14 @@ target_sources(
           src/libsysbase_syscalls.c
           src/usb_host.c
           src/usbh_conf.c
-          src/usbd_conf.c
           src/common/non_file_printing_counter.cpp
           src/common/print_processor.cpp
           $<$<STREQUAL:${FILAMENT_SENSOR},YES>:src/common/filament_sensor.cpp>
           $<$<STREQUAL:${FILAMENT_SENSOR},YES>:src/common/filament_sensor_photoeletric.cpp>
           $<$<BOOL:${FILAMENT_SENSOR}>:src/common/thread_measurement.cpp>
           src/common/adc.cpp
+          src/common/basename.c
+          src/common/lfn.c
           src/common/i2c.cpp
           src/common/hardware_serial.cpp
           src/common/eeprom.cpp
@@ -606,13 +610,16 @@ target_sources(
           src/common/sim_heater.cpp
           src/common/marlin_server.cpp
           src/common/fsm_types.cpp
+          src/common/jsmn.c
           src/common/selftest/selftest_MINI.cpp
           src/common/selftest/selftest_fan.cpp
           src/common/selftest/selftest_axis.cpp
           src/common/selftest/selftest_heater.cpp
           src/common/st25dv64k.c
           src/common/w25x.c
+          src/common/w25x_communication.cpp
           src/common/gcode_file.cpp
+          src/common/gcode_filename.cpp
           src/common/gcode_filter.cpp
           src/common/gcode_info.cpp
           src/common/gcode_thumb_decoder.cpp
@@ -637,6 +644,7 @@ target_sources(
           $<$<STREQUAL:${PRINTER},MINI>:src/common/minda_broken_cable_detection.cpp>
           $<$<STREQUAL:${PRINTER},MINI>:src/common/MindaRedscreen.cpp>
           src/common/Z_probe.cpp
+          src/marlin_stubs/M300.cpp
           src/marlin_stubs/M330.cpp
           src/marlin_stubs/M50.cpp
           src/marlin_stubs/M505.cpp
@@ -652,7 +660,7 @@ target_sources(
           src/marlin_stubs/pause/M600.cpp
           src/marlin_stubs/pause/M601_M602.cpp
           src/marlin_stubs/pause/M603.cpp
-          src/marlin_stubs/pause/M701_M702.cpp
+          src/marlin_stubs/pause/M70X.cpp
           src/marlin_stubs/pause/pause.cpp
           src/marlin_stubs/feature/safety_timer.cpp
           src/marlin_stubs/sdcard/M20-M30_M32-M34.cpp
@@ -673,6 +681,7 @@ target_sources(
           src/logging/log_dest_rtt.c
           src/logging/log_dest_shared.c
           src/logging/log_dest_syslog.c
+          src/logging/log_dest_usb.c
   )
 
 if(GUI)
@@ -750,14 +759,6 @@ if(GUI)
             src/gui/screen_menu_footer_settings.cpp
             src/gui/screen_sheet_rename.cpp
             src/gui/screen_prusa_link.cpp
-            src/gui/test/screen_test.cpp
-            src/gui/test/screen_test_disp_mem.cpp
-            src/gui/test/screen_test_gui.cpp
-            src/gui/test/screen_test_term.cpp
-            src/gui/test/screen_test_msgbox.cpp
-            src/gui/test/screen_test_dlg.cpp
-            src/gui/test/screen_test_wizard_icons.cpp
-            src/gui/test/screen_test_graph.cpp
             src/gui/wizard/selftest.cpp
             src/gui/wizard/firstlay.cpp
             src/gui/wizard/screen_wizard.cpp
@@ -773,12 +774,11 @@ if(GUI)
             src/gui/screen_menu_tune.cpp
             src/gui/screen_menu_fw_update.cpp
             src/gui/screen_menu_esp_update.cpp
-            src/gui/test/screen_menu_test_temperature.cpp
-            src/gui/test/screen_mesh_bed_lv.cpp
             src/gui/screen_menu_eeprom.cpp
             src/gui/footer/footer_item_axis.cpp
             src/gui/footer/footer_item_fans.cpp
             src/gui/logger.c
+            src/guiapi/src/knob_event.cpp
             src/guiapi/src/gui.cpp
             src/guiapi/src/term.cpp
             src/guiapi/src/guitypes.cpp
@@ -822,7 +822,21 @@ if(GUI)
 endif()
 
 if(GUI AND DEBUG) # gui and debug
-  target_sources(firmware PRIVATE src/gui/screen_menu_experimental_settings_debug.cpp)
+  target_sources(
+    firmware
+    PRIVATE src/gui/screen_menu_experimental_settings_debug.cpp
+            src/gui/test/screen_test.cpp
+            src/gui/test/screen_test_disp_mem.cpp
+            src/gui/test/screen_test_gui.cpp
+            src/gui/test/screen_test_term.cpp
+            src/gui/test/screen_test_msgbox.cpp
+            src/gui/test/screen_test_dlg.cpp
+            src/gui/test/screen_test_wizard_icons.cpp
+            src/gui/test/screen_test_graph.cpp
+            src/gui/test/screen_menu_eeprom_test.cpp
+            src/gui/test/screen_menu_test_temperature.cpp
+            src/gui/test/screen_mesh_bed_lv.cpp
+    )
 elseif(GUI) # gui, not debug
   target_sources(firmware PRIVATE src/gui/screen_menu_experimental_settings_mini.cpp)
 endif()
@@ -857,6 +871,14 @@ set_property(
   PROPERTY COMPILE_DEFINITIONS
            INIT_TRINAMIC_FROM_MARLIN_ONLY=$<BOOL:${INIT_TRINAMIC_FROM_MARLIN_ONLY}>
   )
+
+# Due to the wrong use of interface library for WUI, the flag "GENERATED" is not properly propagated
+# and cmake fails. This sets it manually and makes it work.
+#
+# Newer cmake (3.20) should fix this and can be removed.
+#
+# https://github.com/prusa3d/Prusa-Firmware-Buddy/pull/1790#issuecomment-1010525282
+set_property(SOURCE ${CMAKE_BINARY_DIR}/lib/WUI/http_req_automaton.cpp PROPERTY GENERATED 1)
 
 if(NOT CMAKE_CROSSCOMPILING)
   enable_testing()
