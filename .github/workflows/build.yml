@@ -1,0 +1,116 @@
+# Builds Prusa's MINI firmware with the LCD read-mode patch for every new Prusa release.
+# Daily: finds the newest stable Prusa release that has MINI firmware and no release here yet,
+# applies patch/apply.py, builds the eight language variants and publishes them as a release.
+# A fix that no longer fits the code fails the run, and GitHub mails the repository owner.
+name: build
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Prusa tag to build (e.g. v8.0.2); empty = newest stable release"
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM: prusa3d/Prusa-Firmware-Buddy
+
+jobs:
+  find:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.find.outputs.tag }}
+    steps:
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WANTED: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "${WANTED:-}" ]; then
+            tag="$WANTED"
+          else
+            tag=$(gh release list -R "$UPSTREAM" --exclude-drafts --exclude-pre-releases --limit 20 \
+                    --json tagName,isLatest -q '.[].tagName' | while read -r t; do
+                    if gh release view "$t" -R "$UPSTREAM" --json assets -q '.assets[].name' | grep -q '^MINI_'; then
+                      echo "$t"; break
+                    fi
+                  done)
+          fi
+          if [ -z "$tag" ]; then echo "no MINI release found"; exit 0; fi
+          if gh release view "$tag-lcdfix" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 && [ -z "${WANTED:-}" ]; then
+            echo "$tag already built"; exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: find
+    if: needs.find.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: true
+      matrix:
+        lang: [cs, de, es, fr, it, ja, pl, uk]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: fix
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ needs.find.outputs.tag }}
+          path: buddy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Apply the LCD fix
+        working-directory: buddy
+        run: |
+          set -euo pipefail
+          python3 ../fix/patch/apply.py src/guiapi/src/st7789v.cpp
+          git diff --stat
+      - name: Build MINI english-${{ matrix.lang }}
+        working-directory: buddy
+        run: |
+          set -euo pipefail
+          pip install requests
+          python utils/build.py --preset mini-en-${{ matrix.lang }} --build-type release \
+            --bootloader yes --final --products-dir ../products
+          ls -la ../products
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mini-en-${{ matrix.lang }}
+          path: products/*.bbf
+          if-no-files-found: error
+
+  release:
+    needs: [find, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: products
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.find.outputs.tag }}
+        run: |
+          set -euo pipefail
+          v="${TAG#v}"
+          declare -A name=([cs]=czech [de]=german [es]=spanish [fr]=french [it]=italian [ja]=japanese [pl]=polish [uk]=ukrainian)
+          mkdir out
+          for f in products/*.bbf; do ls -la "$f"; done
+          for l in "${!name[@]}"; do
+            src=$(ls products/*en-"$l"*.bbf | head -1)
+            cp "$src" "out/MINI_english-${name[$l]}_firmware_${v}_lcdfix.bbf"
+          done
+          (cd out && sha256sum *.bbf > SHA256SUMS)
+          gh release delete "$TAG-lcdfix" -y --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG-lcdfix" out/* --title "MINI $v with the LCD fix" --notes \
+            "Prusa MINI firmware $v ([Prusa's release](https://github.com/$UPSTREAM/releases/tag/$TAG)) with the LCD read-mode fix (patch/apply.py). Built automatically from Prusa's source by this repository's workflow; see the README for what it changes and how to flash."
