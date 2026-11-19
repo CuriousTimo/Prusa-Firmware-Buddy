@@ -77,6 +77,7 @@ jobs:
         working-directory: buddy
         run: |
           set -euo pipefail
+          sudo apt-get install -y -q gettext >/dev/null
           pip install requests
           python utils/build.py --preset mini-en-${{ matrix.lang }} --build-type release \
             --bootloader yes --final --products-dir ../products
